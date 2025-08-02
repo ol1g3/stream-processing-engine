@@ -18,12 +18,11 @@ class WatermarkOperator:
         else:
             self.lastSeenOn = max(self.lastSeenOn, e.timestamp)
 
-        self.windowStrategy.add_event(e)
         if self.windowStrategy.emit_watermark():
             await self.generate_watermark(self.lastSeenOn)
 
     async def generate_watermark(self, value: datetime):
-        watermark = Watermark(datetime.now())
+        watermark = Watermark(value)
         await self.queue.put(watermark)
 
         # send it via stream

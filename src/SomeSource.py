@@ -17,9 +17,9 @@ class SomeSource(Source):
     async def multi_put(self, num: int) -> None:
         threads = list(map(lambda x: Thread(), range(10)))
 
-        for thread in threads:
-            thread = Thread(target=lambda: self.put(num))
-            thread.start()
+        for i in range(len(threads)):
+            threads[i] = Thread(target=lambda: self.put(num))
+            threads[i].start()
 
         for thread in threads:
             thread.join()
