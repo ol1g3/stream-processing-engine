@@ -1,5 +1,5 @@
 from typing import Protocol, Iterable
-from DataTypes import Event, Record
+from src.DataTypes import Event, Record
 from datetime import datetime
 
 WINDOW_TIME = 100  # microseconds
@@ -18,10 +18,12 @@ class SimpleWindow(WindowStrategy):
         self.startTimestamp = None
 
     def emit_watermark(self, lastSeenOn: datetime) -> bool:
-        return self.maxSize >= len(self.window)
+        return self.maxSize <= len(self.window)
 
     def process_window(self):
-        return self.window
+        result = self.window.copy()
+        self.window.clear()
+        return result
 
     def add_event(self, event: Record):
         self.window.append(event)
@@ -39,7 +41,9 @@ class TumblingWindow(WindowStrategy):
         return (lastSeenOn.microsecond - self.startTimestamp.microsecond) >= WINDOW_TIME
 
     def process_window(self):
-        return self.window
+        result = self.window.copy()
+        self.window.clear()
+        return result
 
     def add_event(self, event: Record):
         self.window.append(event)

@@ -1,5 +1,5 @@
 from typing import Protocol, Iterable
-from DataTypes import Record
+from src.DataTypes import Record
 
 
 class Storage(Protocol):
@@ -10,13 +10,16 @@ class Storage(Protocol):
 
 
 class KVStore(Storage):
-    async def __init__(self) -> None:
+    def __init__(self) -> None:
         self.storage = dict()
         self.key = 0
 
     async def save(self, window: Iterable[Record]) -> None:
         self.storage[self.key] = list(window)
         self.key += 1
+
+    async def append(self, window: Iterable[Record]) -> None:
+        pass
 
     async def destroy(self) -> None:
         self.storage = dict()

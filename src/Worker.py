@@ -1,9 +1,13 @@
+from __future__ import annotations
 from typing import Protocol, Optional, Dict, Any, List, Iterable
 from asyncio.queues import Queue
 from abc import ABC, abstractmethod
-from DataTypes import Record, Watermark, Event
-from Storage import Storage
-from WindowStrategy import WindowStrategy
+from src.DataTypes import Record, Watermark, Event
+from src.Storage import Storage
+from src.WindowStrategy import WindowStrategy
+from src.SomeSource import SomeSource
+import asyncio
+import logging
 
 MAX_QUEUE_SIZE = 1000
 
@@ -11,7 +15,7 @@ MAX_QUEUE_SIZE = 1000
 class Worker(ABC):
     id = 0
 
-    def __init__(self, inputQueue: Queue[Record], outputQueues: List[Queue[Record]], maxSize: int) -> None:
+    def __init__(self, inputQueue: 'Queue[Record]', outputQueues: 'List[Queue[Record]]', maxSize: int) -> None:
         self.inputQueue = inputQueue
         self.outputQueues = outputQueues
         self.maxSize = maxSize
@@ -30,7 +34,7 @@ class Worker(ABC):
 
 
 class KeyByWorker(Worker):
-    def __init__(self, inputQueue: Queue[Record], outputQueues: List[Queue[Record]], maxSize: int = MAX_QUEUE_SIZE):
+    def __init__(self, inputQueue: 'Queue[Record]', outputQueues: 'List[Queue[Record]]', maxSize: int = MAX_QUEUE_SIZE):
         super().__init__(inputQueue, outputQueues, maxSize)
         self.id = super().id
 
@@ -72,7 +76,7 @@ class KeyByWorker(Worker):
 
 
 class FilterWorker(Worker):
-    def __init__(self, inputQueue: Queue[Record], outputQueues: List[Queue[Record]], predicate_func,
+    def __init__(self, inputQueue: 'Queue[Record]', outputQueues: 'List[Queue[Record]]', predicate_func,
                  maxSize: int = MAX_QUEUE_SIZE):
         super().__init__(inputQueue, outputQueues, maxSize)
         self.id = super().id
@@ -119,7 +123,7 @@ class FilterWorker(Worker):
 
 
 class AggregateWorker(Worker):
-    def __init__(self, inputQueue: Queue[Record], outputQueues: Queue[List[Event]], windowStrategy: WindowStrategy,
+    def __init__(self, inputQueue: 'Queue[Record]', outputQueues: 'Queue[List[Event]]', windowStrategy: WindowStrategy,
                  maxSize: int = MAX_QUEUE_SIZE):
         super().__init__(inputQueue, [], maxSize)
         self.outputQueues = [outputQueues]
@@ -132,10 +136,9 @@ class AggregateWorker(Worker):
             await self.process(record)
 
     async def process(self, record: Record) -> Optional[Record]:
-        if isinstance(record, Watermark):
-            if self.windowStrategy.emit_watermark(record.timestamp):
-                window_data = self.windowStrategy.process_window()
-                await self.emit_window(list(window_data))
+        if self.windowStrategy.emit_watermark(record.timestamp):
+            window_data = self.windowStrategy.process_window()
+            await self.emit_window(list(window_data))
         else:
             self.windowStrategy.add_event(record)
 
@@ -165,7 +168,7 @@ class AggregateWorker(Worker):
 
 
 class SinkWorker(Worker):
-    def __init__(self, inputQueue: Queue[List[Event]], storage: Storage,
+    def __init__(self, inputQueue: 'Queue[List[Event]]', storage: Storage,
                  maxSize: int = MAX_QUEUE_SIZE):
         super().__init__(Queue(), [], maxSize)
         self.inputQueue = inputQueue
@@ -175,25 +178,45 @@ class SinkWorker(Worker):
     async def run(self) -> None:
         while True:
             record = await self.inputQueue.get()
-            await self.storage.append(record)
+            await self.storage.save(record)
 
     async def close(self):
         self.inputQueue.shutdown(immediate=True)
 
 
 class PipelineBuilder():
-    def __init__(self, n_workers: int, predicate_func, windowStrategy: WindowStrategy, storage: Storage) -> None:
-        keyInputQueues: List[Queue[Record]] = list(
-            map(lambda x: Queue(), range(n_workers)))
+    def __init__(self, n_workers: int, keyInputQueues: 'List[Queue[Record]]', predicate_func, windowStrategy: WindowStrategy, storage: Storage) -> None:
+        self.logger = logging.getLogger("pipeline.builder")
+        self.logger.info(f"Building pipeline with {n_workers} workers")
+
         keyOutputQueues = list(map(lambda x: Queue(), range(n_workers)))
-        filterOutputQueues: List[Queue[Record]] = [Queue()]
+        filterOutputQueues: 'List[Queue[Record]]' = [Queue()]
         aggregateOutputQueue: Queue[List[Event]] = Queue()
 
         self.keyByWorkers = list(
             map(lambda x: KeyByWorker(keyInputQueues[x], keyOutputQueues), range(n_workers)))
+        self.logger.info(f"Created {len(self.keyByWorkers)} KeyBy workers")
+
         self.filterWorkers = list(map(lambda x: FilterWorker(
             keyOutputQueues[x], filterOutputQueues, predicate_func), range(n_workers)))
+        self.logger.info(f"Created {len(self.filterWorkers)} Filter workers")
+
         self.windowStrategy = windowStrategy
         self.aggregateWorker = list(map(lambda x: AggregateWorker(
             filterOutputQueues[0], aggregateOutputQueue, self.windowStrategy), range(1)))
         self.sinkWorker = SinkWorker(aggregateOutputQueue, storage)
+
+        self.logger.info("Pipeline construction complete")
+
+    async def start_workers(self):
+        tasks = []
+
+        for worker in self.keyByWorkers + self.filterWorkers + self.aggregateWorker:
+            task = asyncio.create_task(worker.run())
+            tasks.append(task)
+            self.logger.debug(f"Started worker {worker.id}")
+
+        sink_task = asyncio.create_task(self.sinkWorker.run())
+        tasks.append(sink_task)
+
+        return tasks
