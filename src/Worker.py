@@ -75,6 +75,50 @@ class KeyByWorker(Worker):
         # all the output queues are already down
 
 
+class MapWorker(Worker):
+    def __init__(self, inputQueue: 'Queue[Record]', outputQueues: 'List[Queue[Record]]', map_func,
+                 maxSize: int = MAX_QUEUE_SIZE):
+        super().__init__(inputQueue, outputQueues, maxSize)
+        self.id = super().id
+        self.map_function = map_func
+
+    async def run(self) -> None:
+        while True:
+            record = await self.inputQueue.get()
+            await self.process(record)
+
+    async def process(self, record: Record) -> Optional[Record]:
+        await self.emit(self.map_function(record))
+        return record
+
+    async def emit(self, record: Record) -> None:
+        await self.outputQueues[0].put(record)
+
+    async def on_watermark(self, record: Watermark) -> None:
+        await self.emit(record)
+
+    async def snapshot_capture(self) -> Dict[Any, Any]:
+        return {"id": self.id,
+                "num_elements": self.num_elements}
+
+    async def restore_snapshot(self, snapshot: Dict[Any, Any]) -> None:
+        if "id" not in snapshot.keys() or "num_elements" not in snapshot.keys():
+            return
+        id = snapshot["id"]
+        num_elements = snapshot["num_elements"]
+
+        self.id = id
+        self.num_elements = num_elements
+
+    async def on_error(self, record: Record) -> None:
+        # implement different types of on_error, now its just shutting down
+        await self.close()
+
+    async def close(self):
+        self.inputQueue.shutdown(immediate=True)
+        # all the output queues are already down
+
+
 class FilterWorker(Worker):
     def __init__(self, inputQueue: 'Queue[Record]', outputQueues: 'List[Queue[Record]]', predicate_func,
                  maxSize: int = MAX_QUEUE_SIZE):
@@ -190,6 +234,7 @@ class PipelineBuilder():
         self.logger.info(f"Building pipeline with {n_workers} workers")
 
         keyOutputQueues = list(map(lambda x: Queue(), range(n_workers)))
+        mapOutputQueues = list(map(lambda x: Queue(), range(n_workers)))
         filterOutputQueues: 'List[Queue[Record]]' = [Queue()]
         aggregateOutputQueue: Queue[List[Event]] = Queue()
 
@@ -197,8 +242,12 @@ class PipelineBuilder():
             map(lambda x: KeyByWorker(keyInputQueues[x], keyOutputQueues), range(n_workers)))
         self.logger.info(f"Created {len(self.keyByWorkers)} KeyBy workers")
 
+        self.mapByWorkers = list(
+            map(lambda x: MapWorker(keyOutputQueues[x], mapOutputQueues, lambda x: x), range(n_workers)))
+        self.logger.info(f"Created {len(self.mapByWorkers)} Map workers")
+
         self.filterWorkers = list(map(lambda x: FilterWorker(
-            keyOutputQueues[x], filterOutputQueues, predicate_func), range(n_workers)))
+            mapOutputQueues[x], filterOutputQueues, predicate_func), range(n_workers)))
         self.logger.info(f"Created {len(self.filterWorkers)} Filter workers")
 
         self.windowStrategy = windowStrategy
@@ -211,7 +260,7 @@ class PipelineBuilder():
     async def start_workers(self):
         tasks = []
 
-        for worker in self.keyByWorkers + self.filterWorkers + self.aggregateWorker:
+        for worker in self.keyByWorkers + self.mapByWorkers + self.filterWorkers + self.aggregateWorker:
             task = asyncio.create_task(worker.run())
             tasks.append(task)
             self.logger.debug(f"Started worker {worker.id}")
