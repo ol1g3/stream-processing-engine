@@ -11,14 +11,14 @@ class SomeSource(Source):
 
     async def put(self, num: int) -> None:
         for i in range(num):
-            event = Event("test", EventType.INSERT, datetime.now())
+            event = Event(1, "test", EventType.INSERT, datetime.now())
             self.queue.put_nowait(event)
 
     async def multi_put(self, num: int) -> None:
-        threads = list(map(lambda x: Thread(), range(10)))
+        threads = list(map(lambda x: Thread(
+            target=lambda: self.put(num)), range(10)))
 
         for i in range(len(threads)):
-            threads[i] = Thread(target=lambda: self.put(num))
             threads[i].start()
 
         for thread in threads:

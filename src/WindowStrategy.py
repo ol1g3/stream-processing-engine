@@ -6,7 +6,7 @@ WINDOW_TIME = 100  # microseconds
 
 
 class WindowStrategy(Protocol):
-    def emit_watermark(self) -> bool: ...
+    def emit_watermark(self, lastSeenOn: datetime) -> bool: ...
     def process_window(self) -> Iterable[Event]: ...
     def add_event(self, event: Record): ...
 
@@ -17,19 +17,16 @@ class SimpleWindow(WindowStrategy):
         self.maxSize = size
         self.startTimestamp = None
 
-    def emit_watermark(self) -> bool:
-        return self.maxSize == len(self.window)
+    def emit_watermark(self, lastSeenOn: datetime) -> bool:
+        return self.maxSize >= len(self.window)
 
     def process_window(self):
         return self.window
 
     def add_event(self, event: Record):
         self.window.append(event)
-        if self.startTimestamp == None or self.startTimestamp < event.timestamp:
+        if self.startTimestamp == None or self.startTimestamp > event.timestamp:
             self.startTimestamp = event.timestamp
-
-        if self.maxSize == self.window:
-            self.emit_watermark()
 
 
 class TumblingWindow(WindowStrategy):
@@ -38,8 +35,8 @@ class TumblingWindow(WindowStrategy):
         self.maxSize = size
         self.startTimestamp = datetime.now()
 
-    def emit_watermark(self) -> bool:
-        return (datetime.now().microsecond - self.startTimestamp.microsecond) >= WINDOW_TIME
+    def emit_watermark(self, lastSeenOn: datetime) -> bool:
+        return (lastSeenOn.microsecond - self.startTimestamp.microsecond) >= WINDOW_TIME
 
     def process_window(self):
         return self.window
@@ -48,6 +45,3 @@ class TumblingWindow(WindowStrategy):
         self.window.append(event)
         if self.startTimestamp == None or self.startTimestamp < event.timestamp:
             self.startTimestamp = event.timestamp
-
-        if self.maxSize == self.window:
-            self.emit_watermark()

@@ -12,14 +12,24 @@ class EventType(Enum):
 
 @dataclass(frozen=True)
 class Event:
+    id: int
     name: str
     type: EventType
     timestamp: datetime
 
+    def keyHash(self) -> int:
+        # simple built-in hashing for now
+        return hash(self.id)
+
 
 @dataclass(frozen=True)
 class Watermark:
+    id: int
     timestamp: datetime
+
+    def keyHash(self) -> int:
+        # simple built-in hashing for now
+        return hash(self.id)
 
 
 Record = Union[Event, Watermark]
